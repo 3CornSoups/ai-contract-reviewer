@@ -1,0 +1,73 @@
+# =========================================================================
+# 文件作用：多容器服务编排脚本
+# 包含服务：Nginx网关(兼前端)、FastAPI后端、PostgreSQL数据库(含pgvector)
+# =========================================================================
+version: '3.8'
+
+services:
+  db:
+    # 基础镜像：使用带 pgvector 扩展的 PostgreSQL 15 镜像
+    image: pgvector/pgvector:pg15
+    container_name: reviewer_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password_123
+      POSTGRES_DB: contract_db
+    ports:
+      - "5432:5432"
+    volumes:
+      # 持久化数据库数据
+      - pgdata:/var/lib/postgresql/data
+      # 挂载初始化脚本，容器首次启动时会自动执行
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - reviewer_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: reviewer_backend
+    restart: always
+    depends_on:
+      - db
+    environment:
+      # 指向同一 Docker 网络下的 db 容器
+      - DATABASE_URL=postgresql://postgres:postgres_password_123@db:5432/contract_db
+      # 注意：部署时请在系统环境变量或当前目录下 .env 中设置 OPENAI_API_KEY
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-your_default_key_here}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载后端的文件上传目录，防止容器销毁导致上传的PDF丢失
+      - ./backend/uploads:/app/uploads
+    networks:
+      - reviewer_net
+
+  gateway:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: reviewer_gateway
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      # 宿主机访问端口映射
+      - "80:80"
+    volumes:
+      # 将编写的 Nginx 配置文件挂载到容器中覆盖默认配置
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - reviewer_net
+
+# 定义命名卷用于数据持久化
+volumes:
+  pgdata:
+
+# 定义自定义网络，方便容器间通过服务名(如 http://backend:8000)解析
+networks:
+  reviewer_net:
+    driver: bridge
